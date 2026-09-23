@@ -1,0 +1,105 @@
+# Install this file as .github/workflows/release-appimage.yml in the public
+# kokooldude/deck-dash-releases repository. Never put source or keys there.
+name: Release Steam Deck AppImage
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Private source tag or commit (main for the first hardware test)
+        required: true
+        default: main
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out private source with read-only deploy key
+        uses: actions/checkout@v4
+        with:
+          repository: kokooldude/deck-dash
+          ref: ${{ inputs.source_ref }}
+          ssh-key: ${{ secrets.DECK_DASH_SOURCE_READ_KEY }}
+          persist-credentials: false
+          path: source
+
+      - name: Install Tauri Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
+            xdg-utils libunwind-dev libgstreamer1.0-dev \
+            libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: source/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "source/src-tauri -> target"
+
+      - name: Verify source
+        working-directory: source
+        run: |
+          npm ci
+          npm run check
+          cargo fmt --manifest-path src-tauri/Cargo.toml --check
+          cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
+          cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Ensure version has not already been released
+        id: version
+        working-directory: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(node -p 'require("./package.json").version')"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if gh release view "deck-dash-v$version" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Version $version is already published; bump the source version." >&2
+            exit 1
+          fi
+
+      - name: Configure public signed update feed
+        working-directory: source
+        env:
+          DECK_DASH_RELEASE_REPOSITORY: ${{ github.repository }}
+        run: node scripts/write-release-config.mjs
+
+      - name: Build and publish signed AppImage
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: source
+          tagName: deck-dash-v__VERSION__
+          releaseName: "Deck Dash v__VERSION__"
+          releaseBody: |
+            Steam Deck x86_64 AppImage release.
+
+            Install with the attached install-on-deck.sh, then add /home/deck/Applications/DeckDash.AppImage to Steam.
+            Later versions update in Settings → About.
+          releaseDraft: false
+          prerelease: false
+          uploadUpdaterJson: true
+          args: --bundles appimage --config src-tauri/tauri.release.generated.json
+
+      - name: Attach first-install helper
+        working-directory: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: gh release upload "deck-dash-v$VERSION" packaging/install-on-deck.sh -R "$GITHUB_REPOSITORY"
