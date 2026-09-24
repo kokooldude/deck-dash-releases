@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       source_ref:
-        description: Private source tag or commit (main for the first hardware test)
+        description: Private source tag or commit
         required: true
         default: main
         type: string
@@ -28,35 +28,17 @@ jobs:
           persist-credentials: false
           path: source
 
-      - name: Install Tauri Linux dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
-            xdg-utils libunwind-dev libgstreamer1.0-dev \
-            libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-base \
-            gstreamer1.0-plugins-good
-
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: source/package-lock.json
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-      - uses: swatinem/rust-cache@v2
-        with:
-          workspaces: "source/src-tauri -> target"
 
       - name: Verify source
         working-directory: source
         run: |
           npm ci
           npm run check
-          cargo fmt --manifest-path src-tauri/Cargo.toml --check
-          cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
-          cargo test --manifest-path src-tauri/Cargo.toml
 
       - name: Ensure version has not already been released
         id: version
@@ -71,35 +53,31 @@ jobs:
             exit 1
           fi
 
-      - name: Configure public signed update feed
+      - name: Build Chromium AppImage
+        working-directory: source
+        run: npm run electron:build
+
+      - name: Sign hardware-test AppImage
         working-directory: source
         env:
-          DECK_DASH_RELEASE_REPOSITORY: ${{ github.repository }}
-        run: node scripts/write-release-config.mjs
-
-      - name: Build and publish signed AppImage
-        uses: tauri-apps/tauri-action@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        with:
-          projectPath: source
-          tagName: deck-dash-v__VERSION__
-          releaseName: "Deck Dash v__VERSION__"
-          releaseBody: |
-            Steam Deck x86_64 AppImage release.
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          appimage="release-electron/Deck.Dash_${VERSION}_x86_64.AppImage"
+          npx tauri signer sign "$appimage" --app-version "$VERSION"
 
-            Install with the attached install-on-deck.sh, then add /home/deck/Applications/DeckDash.AppImage to Steam.
-            Later versions update in Settings → About.
-          releaseDraft: false
-          prerelease: false
-          uploadUpdaterJson: true
-          args: --bundles appimage --config src-tauri/tauri.release.generated.json
-
-      - name: Attach first-install helper
+      - name: Publish release
         working-directory: source
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
-        run: gh release upload "deck-dash-v$VERSION" packaging/install-on-deck.sh -R "$GITHUB_REPOSITORY"
+        run: |
+          gh release create "deck-dash-v$VERSION" \
+            "release-electron/Deck.Dash_${VERSION}_x86_64.AppImage" \
+            "release-electron/Deck.Dash_${VERSION}_x86_64.AppImage.sig" \
+            "packaging/install-on-deck.sh" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Deck Dash v$VERSION · Steam Deck hardware test" \
+            --prerelease \
+            --notes "Hardware-test build of the Milestone 1 shell with bundled Chromium software rendering. Tauri/Rust source remains in the private repository, but this preview package does not yet expose its native commands. Install over /home/deck/Applications/DeckDash.AppImage with install-on-deck.sh; an existing Steam shortcut at that path remains valid. Automatic updates are paused in this build while the update signature path is validated. Test in Desktop Mode first, then Gaming Mode."
