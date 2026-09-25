@@ -80,4 +80,4 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --title "Deck Dash v$VERSION · Steam Deck hardware test" \
             --prerelease \
-            --notes "Hardware-test build of the Milestone 1 shell with bundled Chromium software rendering. Tauri/Rust source remains in the private repository, but this preview package does not yet expose its native commands. Install over /home/deck/Applications/DeckDash.AppImage with install-on-deck.sh; an existing Steam shortcut at that path remains valid. Automatic updates are paused in this build while the update signature path is validated. Test in Desktop Mode first, then Gaming Mode."
+            --notes "Milestone 1 hardware-test build with the stable Chromium shell and bundled Rust native sidecar. The sidecar initializes the shared SQLite schema and exposes typed native/runtime diagnostics in Settings > Performance. Install over /home/deck/Applications/DeckDash.AppImage with install-on-deck.sh; an existing Steam shortcut at that path remains valid. Automatic updates remain paused while the update-signature path is validated. Test in Desktop Mode first, then Gaming Mode."
